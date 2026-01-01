@@ -348,25 +348,46 @@ def run_folder_mode(tts, converter, args, output_dir, dry_run):
         print("No .txt files found. Processed 0 files.")
         return outputs, skipped, errors, mapping, None
 
-    for text_path in text_files:
+    total_files = len(text_files)
+    print(f"\n{'='*60}")
+    print(f"Starting batch processing: {total_files} file(s) found")
+    print(f"{'='*60}\n")
+
+    for idx, text_path in enumerate(text_files, 1):
+        file_name = os.path.basename(text_path)
+        print(f"\n[{idx}/{total_files}] Processing: {file_name}")
+        print("-" * 60)
+
         try:
             raw_text = read_text_file(text_path).strip()
         except Exception as exc:
+            print(f"  ✗ ERROR: Failed to read file - {exc}")
             skipped.append(os.path.basename(text_path))
             errors.append(f"{text_path}: {exc}")
             continue
 
         if len(raw_text) == 0:
+            print(f"  ✗ SKIPPED: File is empty")
             skipped.append(os.path.basename(text_path))
             continue
 
         normalized_text = normalize_text(raw_text, converter)
         base_name = os.path.splitext(os.path.basename(text_path))[0]
         output_path, _ = build_output_path(base_name, output_dir)
+
         if not dry_run:
+            print(f"  → Synthesizing...")
             infer_single(tts, normalized_text, output_path, args)
+            print(f"  ✓ SUCCESS: Saved to {output_path}")
+        else:
+            print(f"  → DRY RUN: Would save to {output_path}")
+
         outputs.append(output_path)
         mapping.append((text_path, output_path))
+
+    print(f"\n{'='*60}")
+    print(f"Batch processing completed!")
+    print(f"{'='*60}\n")
 
     return outputs, skipped, errors, mapping, None
 

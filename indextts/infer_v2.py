@@ -403,7 +403,7 @@ class IndexTTS2:
             if emo_text is None:
                 emo_text = text  # use main text prompt
             emo_dict = self.qwen_emo.inference(emo_text)
-            print(f"detected emotion vectors from text: {emo_dict}")
+            # print(f"detected emotion vectors from text: {emo_dict}")  # Commented out to reduce verbosity
             # convert ordered dict to list of vectors; the order is VERY important!
             emo_vector = list(emo_dict.values())
 
@@ -415,7 +415,7 @@ class IndexTTS2:
             if emo_vector_scale != 1.0:
                 # scale each vector and truncate to 4 decimals (for nicer printing)
                 emo_vector = [int(x * emo_vector_scale * 10000) / 10000 for x in emo_vector]
-                print(f"scaled emotion vectors to {emo_vector_scale}x: {emo_vector}")
+                # print(f"scaled emotion vectors to {emo_vector_scale}x: {emo_vector}")  # Commented out to reduce verbosity
 
         if emo_audio_prompt is None:
             # we are not using any external "emotion reference voice"; use
@@ -657,7 +657,7 @@ class IndexTTS2:
 
                     m_start_time = time.perf_counter()
                     wav = self.bigvgan(vc_target.float()).squeeze().unsqueeze(0)
-                    print(wav.shape)
+                    # print(wav.shape)  # Commented out to reduce verbosity
                     bigvgan_time += time.perf_counter() - m_start_time
                     wav = wav.squeeze(1)
 
