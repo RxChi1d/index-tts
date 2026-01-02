@@ -24,8 +24,21 @@ conda_env*/
 Thumbs.db
 desktop.ini
 
+# Local environment files.
+.env*
+*.log
+*.tmp
+*.swp
+
 # IndexTTS.
 /cache/
 /checkpoints/*
 !/checkpoints/*.yaml
 /outputs/
+
+# Development Tools for AI Models.
+.codex/*
+!.codex/prompts/
+.specify/
+
+*.wav
