@@ -130,17 +130,19 @@ curl http://localhost:8000/api/v2/info
 #### 3.2 音訊輸入方式
 
 **支援音訊輸入方式**:
-1. 檔案上傳 (`speaker_audio_type=upload`)
-2. 本地路徑 (`speaker_audio_type=path`)
-3. URL/CDN (`speaker_audio_type=url`)
+1. 檔案上傳 (`speaker_audio`): 客戶端上傳音訊檔案
+2. 本地路徑 (`speaker_audio_path`): 指定伺服器端音訊檔案路徑
+
+**注意**:
+- 二選一，不能同時指定
+- 出於安全考量，不支援 URL 輸入
 
 **範例 1: 預設 JSON 回應（推薦）**
 
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/sync \
   -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav"
+  -F "speaker_audio_path=examples/voice_01.wav"
 ```
 
 **回應**:
@@ -169,8 +171,7 @@ curl http://localhost:8000/api/v2/download/550e8400-... --output output.wav
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/sync \
   -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav" \
+  -F "speaker_audio_path=examples/voice_01.wav" \
   -F "return_file=true" \
   --output output.wav
 ```
@@ -180,8 +181,7 @@ curl -X POST http://localhost:8000/api/v2/tts/sync \
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/sync \
   -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=upload" \
-  -F "speaker_audio_file=@examples/voice_01.wav"
+  -F "speaker_audio=@examples/voice_01.wav"
 ```
 
 ### 4. 非同步 TTS 合成
@@ -193,8 +193,7 @@ curl -X POST http://localhost:8000/api/v2/tts/sync \
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/async \
   -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav"
+  -F "speaker_audio_path=examples/voice_01.wav"
 ```
 
 **回應**:
@@ -260,8 +259,7 @@ curl http://localhost:8000/api/v2/tts/result/550e8400-e29b-41d4-a716-44665544000
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/sync \
   -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav" \
+  -F "speaker_audio_path=examples/voice_01.wav" \
   -F "emotion_mode=0" \
   --output output.wav
 ```
@@ -271,11 +269,9 @@ curl -X POST http://localhost:8000/api/v2/tts/sync \
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/sync \
   -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav" \
+  -F "speaker_audio_path=examples/voice_01.wav" \
   -F "emotion_mode=1" \
-  -F "emotion_audio_type=path" \
-  -F "emotion_audio_value=examples/emo_sad.wav" \
+  -F "emotion_audio_path=examples/emo_sad.wav" \
   -F "emotion_weight=0.8" \
   --output output.wav
 ```
@@ -287,8 +283,7 @@ curl -X POST http://localhost:8000/api/v2/tts/sync \
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/sync \
   -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav" \
+  -F "speaker_audio_path=examples/voice_01.wav" \
   -F "emotion_mode=2" \
   -F 'emotion_vector=[0.1, 0.0, 0.8, 0.0, 0.0, 0.5, 0.0, 0.2]' \
   --output output.wav
@@ -299,8 +294,7 @@ curl -X POST http://localhost:8000/api/v2/tts/sync \
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/sync \
   -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav" \
+  -F "speaker_audio_path=examples/voice_01.wav" \
   -F "emotion_mode=3" \
   -F "emotion_text=委屈巴巴" \
   --output output.wav
@@ -313,8 +307,7 @@ curl -X POST http://localhost:8000/api/v2/tts/sync \
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/sync \
   -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav" \
+  -F "speaker_audio_path=examples/voice_01.wav" \
   -F "do_sample=true" \
   -F "temperature=1.2" \
   -F "top_p=0.9" \
@@ -327,8 +320,7 @@ curl -X POST http://localhost:8000/api/v2/tts/sync \
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/sync \
   -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav" \
+  -F "speaker_audio_path=examples/voice_01.wav" \
   -F "do_sample=false" \
   -F "num_beams=5" \
   --output output.wav
@@ -339,8 +331,7 @@ curl -X POST http://localhost:8000/api/v2/tts/sync \
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/sync \
   -F "text=這是一段很長的文字..." \
-  -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav" \
+  -F "speaker_audio_path=examples/voice_01.wav" \
   -F "max_text_tokens=150" \
   --output output.wav
 ```
@@ -350,13 +341,13 @@ curl -X POST http://localhost:8000/api/v2/tts/sync \
 | 參數 | 類型 | 預設值 | 說明 |
 |------|------|--------|------|
 | `text` | string | 必填 | 要合成的文字 |
-| `speaker_audio_type` | string | 必填 | 音訊輸入類型: upload/path/url |
-| `speaker_audio_value` | string | - | 路徑或 URL（type=path/url 時必填） |
-| `speaker_audio_file` | file | - | 上傳檔案（type=upload 時必填） |
+| `speaker_audio` | file | - | 上傳音色參考音訊檔案 |
+| `speaker_audio_path` | string | - | 或提供伺服器端音訊檔案路徑 |
+| | | | **（二選一，必填）** |
 | `emotion_mode` | int | 0 | 情感控制模式 (0-3) |
-| `emotion_audio_type` | string | - | 情感音訊類型（mode=1 時必填） |
-| `emotion_audio_value` | string | - | 情感音訊路徑/URL |
-| `emotion_audio_file` | file | - | 情感音訊上傳檔案 |
+| `emotion_audio` | file | - | 上傳情感參考音訊檔案（mode=1 可選） |
+| `emotion_audio_path` | string | - | 或提供伺服器端音訊檔案路徑 |
+| | | | **（二選一，mode=1 必填）** |
 | `emotion_text` | string | "" | 情感描述文字（mode=3） |
 | `emotion_weight` | float | 0.65 | 情感權重 (0.0-1.0) |
 | `emotion_vector` | array | null | 8 元素情感向量（mode=2） |
@@ -404,8 +395,7 @@ url = "http://localhost:8000/api/v2/tts/sync"
 
 data = {
     "text": "你好，我是 IndexTTS2 語音合成系統。",
-    "speaker_audio_type": "path",
-    "speaker_audio_value": "examples/voice_01.wav",
+    "speaker_audio_path": "examples/voice_01.wav",
 }
 
 response = requests.post(url, data=data)
@@ -429,8 +419,7 @@ import time
 url = "http://localhost:8000/api/v2/tts/async"
 data = {
     "text": "你好，我是 IndexTTS2 語音合成系統。",
-    "speaker_audio_type": "path",
-    "speaker_audio_value": "examples/voice_01.wav",
+    "speaker_audio_path": "examples/voice_01.wav",
 }
 
 response = requests.post(url, data=data)

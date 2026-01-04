@@ -68,12 +68,7 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
 
 
-class AudioInputType(str, Enum):
-    """Audio input type for speaker/emotion reference."""
 
-    UPLOAD = "upload"
-    PATH = "path"
-    URL = "url"
 
 
 # ===== Pydantic Models =====
@@ -245,116 +240,7 @@ def validate_audio_file(file_path: str) -> bool:
     return Path(file_path).suffix.lower() in valid_extensions
 
 
-async def download_audio_from_url(url: str, dest_path: str) -> None:
-    """Download audio file from URL."""
-    timeout = aiohttp.ClientTimeout(total=60)
-    max_size = 100 * 1024 * 1024  # 100MB limit
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as response:
-            if response.status != 200:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Failed to download audio from URL: HTTP {response.status}",
-                )
-
-            content_length = response.headers.get("Content-Length")
-            if content_length and int(content_length) > max_size:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Audio file too large (max {max_size // 1024 // 1024}MB)",
-                )
-
-            async with aiofiles.open(dest_path, "wb") as f:
-                downloaded = 0
-                async for chunk in response.content.iter_chunked(8192):
-                    downloaded += len(chunk)
-                    if downloaded > max_size:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Audio file too large (max {max_size // 1024 // 1024}MB)",
-                        )
-                    await f.write(chunk)
-
-
-async def handle_audio_input(
-    audio_type: str, audio_value: Optional[str], audio_file: Optional[UploadFile]
-) -> str:
-    """
-    Handle different audio input types and return local file path.
-
-    Args:
-        audio_type: One of 'upload', 'path', 'url'
-        audio_value: Path or URL string
-        audio_file: Uploaded file object
-
-    Returns:
-        Local file path to the audio
-    """
-    if audio_type == AudioInputType.UPLOAD:
-        if not audio_file:
-            raise HTTPException(
-                status_code=400, detail="audio_file is required for upload type"
-            )
-
-        # Save uploaded file to temp location
-        suffix = Path(audio_file.filename).suffix
-        temp_path = os.path.join(
-            tempfile.gettempdir(), f"upload_{uuid.uuid4()}{suffix}"
-        )
-
-        async with aiofiles.open(temp_path, "wb") as f:
-            content = await audio_file.read()
-            await f.write(content)
-
-        if not validate_audio_file(temp_path):
-            os.remove(temp_path)
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid audio format. Supported: .wav, .mp3, .flac, .ogg, .m4a",
-            )
-
-        return temp_path
-
-    elif audio_type == AudioInputType.PATH:
-        if not audio_value:
-            raise HTTPException(
-                status_code=400, detail="audio_value is required for path type"
-            )
-
-        if not validate_audio_file(audio_value):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Audio file not found or invalid format: {audio_value}",
-            )
-
-        return audio_value
-
-    elif audio_type == AudioInputType.URL:
-        if not audio_value:
-            raise HTTPException(
-                status_code=400, detail="audio_value is required for url type"
-            )
-
-        # Download to temp location
-        url_hash = hashlib.md5(audio_value.encode()).hexdigest()[:8]
-        temp_path = os.path.join(
-            tempfile.gettempdir(), f"url_{url_hash}_{uuid.uuid4()}.wav"
-        )
-
-        try:
-            await download_audio_from_url(audio_value, temp_path)
-        except Exception as e:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            raise HTTPException(
-                status_code=400, detail=f"Failed to download audio from URL: {str(e)}"
-            )
-
-        return temp_path
-
-    else:
-        raise HTTPException(status_code=400, detail=f"Invalid audio_type: {audio_type}")
 
 
 def build_generation_kwargs(request: TTSRequest, tts) -> dict[str, Any]:
@@ -695,12 +581,10 @@ async def api_info():
 @app.post("/api/v2/tts/sync")
 async def tts_sync(
     text: str = Form(...),
-    speaker_audio_type: str = Form(...),
-    speaker_audio_value: Optional[str] = Form(None),
-    speaker_audio_file: Optional[UploadFile] = File(None),
-    emotion_audio_type: Optional[str] = Form(None),
-    emotion_audio_value: Optional[str] = Form(None),
-    emotion_audio_file: Optional[UploadFile] = File(None),
+    speaker_audio: Optional[UploadFile] = File(None, description="Upload speaker audio file"),
+    speaker_audio_path: Optional[str] = Form(None, description="Server-side audio file path"),
+    emotion_audio: Optional[UploadFile] = File(None),
+    emotion_audio_path: Optional[str] = Form(None),
     emotion_mode: int = Form(0),
     emotion_text: str = Form(""),
     emotion_weight: float = Form(0.65),
@@ -720,7 +604,14 @@ async def tts_sync(
     """
     Synchronous TTS synthesis endpoint.
 
-    By default, returns JSON with download link. Use return_file=true to download directly.
+    Audio Input:
+    - speaker_audio: Upload speaker audio file (WAV)
+    - speaker_audio_path: Or provide server-side file path
+      (Exactly one is required)
+
+    - emotion_audio: Upload emotion reference audio (optional)
+    - emotion_audio_path: Or provide server-side file path
+      (Cannot specify both)
 
     Response Formats:
     - Default: JSON with download information (SyncTTSResponse)
@@ -734,32 +625,69 @@ async def tts_sync(
 
     try:
         # Handle speaker audio input
-        speaker_audio_path = await handle_audio_input(
-            speaker_audio_type, speaker_audio_value, speaker_audio_file
-        )
-        if (
-            speaker_audio_type == AudioInputType.UPLOAD
-            or speaker_audio_type == AudioInputType.URL
-        ):
-            cleanup_paths.append(speaker_audio_path)
+        if speaker_audio and speaker_audio_path:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot specify both speaker_audio and speaker_audio_path",
+            )
+        
+        if not speaker_audio and not speaker_audio_path:
+            raise HTTPException(
+                status_code=400,
+                detail="Either speaker_audio or speaker_audio_path is required",
+            )
+
+        if speaker_audio:
+            # Save uploaded file to temp location
+            suffix = Path(speaker_audio.filename).suffix if speaker_audio.filename else ".wav"
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=tempfile.gettempdir())
+            cleanup_paths.append(temp_file.name)
+            
+            content = await speaker_audio.read()
+            temp_file.write(content)
+            temp_file.close()
+            
+            speaker_audio_path = temp_file.name
+        else:
+            # Use server path
+            if not os.path.isabs(speaker_audio_path):
+                speaker_audio_path = os.path.abspath(speaker_audio_path)
+            
+            if not os.path.exists(speaker_audio_path):
+                 raise HTTPException(status_code=404, detail=f"Speaker audio file not found: {speaker_audio_path}")
 
         # Handle emotion audio input (if emotion_mode == 1)
-        emotion_audio_path = None
         if emotion_mode == 1:
-            if not emotion_audio_type:
+            if emotion_audio and emotion_audio_path:
                 raise HTTPException(
                     status_code=400,
-                    detail="emotion_audio_type is required when emotion_mode=1",
+                    detail="Cannot specify both emotion_audio and emotion_audio_path",
+                )
+            
+            if not emotion_audio and not emotion_audio_path:
+                 raise HTTPException(
+                    status_code=400,
+                    detail="emotion_audio or emotion_audio_path is required when emotion_mode=1",
                 )
 
-            emotion_audio_path = await handle_audio_input(
-                emotion_audio_type, emotion_audio_value, emotion_audio_file
-            )
-            if (
-                emotion_audio_type == AudioInputType.UPLOAD
-                or emotion_audio_type == AudioInputType.URL
-            ):
-                cleanup_paths.append(emotion_audio_path)
+            if emotion_audio:
+                suffix = Path(emotion_audio.filename).suffix if emotion_audio.filename else ".wav"
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=tempfile.gettempdir())
+                cleanup_paths.append(temp_file.name)
+                
+                content = await emotion_audio.read()
+                temp_file.write(content)
+                temp_file.close()
+                
+                emotion_audio_path = temp_file.name
+            else:
+                 if not os.path.isabs(emotion_audio_path):
+                    emotion_audio_path = os.path.abspath(emotion_audio_path)
+                 
+                 if not os.path.exists(emotion_audio_path):
+                    raise HTTPException(status_code=404, detail=f"Emotion audio file not found: {emotion_audio_path}")
+        else:
+            emotion_audio_path = None
 
         # Parse emotion_vector if provided
         parsed_emotion_vector = None
@@ -845,12 +773,10 @@ async def tts_sync(
 async def tts_async(
     background_tasks: BackgroundTasks,
     text: str = Form(...),
-    speaker_audio_type: str = Form(...),
-    speaker_audio_value: Optional[str] = Form(None),
-    speaker_audio_file: Optional[UploadFile] = File(None),
-    emotion_audio_type: Optional[str] = Form(None),
-    emotion_audio_value: Optional[str] = Form(None),
-    emotion_audio_file: Optional[UploadFile] = File(None),
+    speaker_audio: Optional[UploadFile] = File(None, description="Upload speaker audio file"),
+    speaker_audio_path: Optional[str] = Form(None, description="Server-side audio file path"),
+    emotion_audio: Optional[UploadFile] = File(None),
+    emotion_audio_path: Optional[str] = Form(None),
     emotion_mode: int = Form(0),
     emotion_text: str = Form(""),
     emotion_weight: float = Form(0.65),
@@ -869,6 +795,15 @@ async def tts_async(
     """
     Asynchronous TTS task submission endpoint.
 
+    Audio Input:
+    - speaker_audio: Upload speaker audio file (WAV)
+    - speaker_audio_path: Or provide server-side file path
+      (Exactly one is required)
+
+    - emotion_audio: Upload emotion reference audio (optional)
+    - emotion_audio_path: Or provide server-side file path
+      (Cannot specify both)
+
     Returns task_id for status tracking.
     """
     if app_state["tts"] is None:
@@ -878,35 +813,69 @@ async def tts_async(
 
     try:
         # Handle speaker audio input
-        speaker_audio_path = await handle_audio_input(
-            speaker_audio_type, speaker_audio_value, speaker_audio_file
-        )
-        # Don't add to cleanup_paths yet - will be passed to background task
-
-        # Handle emotion audio input (if emotion_mode == 1)
-        emotion_audio_path = None
-        if emotion_mode == 1:
-            if not emotion_audio_type:
-                raise HTTPException(
-                    status_code=400,
-                    detail="emotion_audio_type is required when emotion_mode=1",
-                )
-
-            emotion_audio_path = await handle_audio_input(
-                emotion_audio_type, emotion_audio_value, emotion_audio_file
+        if speaker_audio and speaker_audio_path:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot specify both speaker_audio and speaker_audio_path",
+            )
+        
+        if not speaker_audio and not speaker_audio_path:
+            raise HTTPException(
+                status_code=400,
+                detail="Either speaker_audio or speaker_audio_path is required",
             )
 
-        # Determine which paths to cleanup after background task
-        if (
-            speaker_audio_type == AudioInputType.UPLOAD
-            or speaker_audio_type == AudioInputType.URL
-        ):
-            cleanup_paths.append(speaker_audio_path)
-        if emotion_audio_path and (
-            emotion_audio_type == AudioInputType.UPLOAD
-            or emotion_audio_type == AudioInputType.URL
-        ):
-            cleanup_paths.append(emotion_audio_path)
+        if speaker_audio:
+            # Save uploaded file to temp location
+            suffix = Path(speaker_audio.filename).suffix if speaker_audio.filename else ".wav"
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=tempfile.gettempdir())
+            cleanup_paths.append(temp_file.name)
+            
+            content = await speaker_audio.read()
+            temp_file.write(content)
+            temp_file.close()
+            
+            speaker_audio_path = temp_file.name
+        else:
+            # Use server path
+            if not os.path.isabs(speaker_audio_path):
+                speaker_audio_path = os.path.abspath(speaker_audio_path)
+            
+            if not os.path.exists(speaker_audio_path):
+                 raise HTTPException(status_code=404, detail=f"Speaker audio file not found: {speaker_audio_path}")
+
+        # Handle emotion audio input (if emotion_mode == 1)
+        if emotion_mode == 1:
+            if emotion_audio and emotion_audio_path:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot specify both emotion_audio and emotion_audio_path",
+                )
+            
+            if not emotion_audio and not emotion_audio_path:
+                 raise HTTPException(
+                    status_code=400,
+                    detail="emotion_audio or emotion_audio_path is required when emotion_mode=1",
+                )
+
+            if emotion_audio:
+                suffix = Path(emotion_audio.filename).suffix if emotion_audio.filename else ".wav"
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=tempfile.gettempdir())
+                cleanup_paths.append(temp_file.name)
+                
+                content = await emotion_audio.read()
+                temp_file.write(content)
+                temp_file.close()
+                
+                emotion_audio_path = temp_file.name
+            else:
+                 if not os.path.isabs(emotion_audio_path):
+                    emotion_audio_path = os.path.abspath(emotion_audio_path)
+                 
+                 if not os.path.exists(emotion_audio_path):
+                    raise HTTPException(status_code=404, detail=f"Emotion audio file not found: {emotion_audio_path}")
+        else:
+            emotion_audio_path = None
 
         # Parse emotion_vector if provided
         parsed_emotion_vector = None
