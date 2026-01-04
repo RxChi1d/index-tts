@@ -106,46 +106,82 @@ curl http://localhost:8000/api/v2/info
 
 **端點**: `POST /api/v2/tts/sync`
 
+#### 3.1 回應格式
+
+預設情況下，同步端點返回 JSON 格式：
+
+```json
+{
+  "download": {
+    "download_url": "/api/v2/download/550e8400-...",
+    "link_id": "550e8400-...",
+    "expires_at": "2026-01-11T10:00:00Z",
+    "file_size": 153600,
+    "file_format": "wav",
+    "duration": 2.5
+  },
+  "created_at": "2026-01-04T10:00:00Z",
+  "completed_at": "2026-01-04T10:00:02Z"
+}
+```
+
+若要直接下載檔案，使用 `return_file=true` 參數。
+
+#### 3.2 音訊輸入方式
+
 **支援音訊輸入方式**:
 1. 檔案上傳 (`speaker_audio_type=upload`)
 2. 本地路徑 (`speaker_audio_type=path`)
 3. URL/CDN (`speaker_audio_type=url`)
 
-**範例 1: 使用本地路徑**
+**範例 1: 預設 JSON 回應（推薦）**
 
 ```bash
 curl -X POST http://localhost:8000/api/v2/tts/sync \
   -F "text=你好，我是 IndexTTS2 語音合成系統。" \
   -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav" \
-  --output output.wav
-```
-
-**範例 2: 上傳音訊檔案**
-
-```bash
-curl -X POST http://localhost:8000/api/v2/tts/sync \
-  -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=upload" \
-  -F "speaker_audio_file=@examples/voice_01.wav" \
-  --output output.wav
-```
-
-**範例 3: 回傳伺服器路徑**
-
-```bash
-curl -X POST http://localhost:8000/api/v2/tts/sync \
-  -F "text=你好，我是 IndexTTS2 語音合成系統。" \
-  -F "speaker_audio_type=path" \
-  -F "speaker_audio_value=examples/voice_01.wav" \
-  -F "return_path=true"
+  -F "speaker_audio_value=examples/voice_01.wav"
 ```
 
 **回應**:
 ```json
 {
-  "audio_path": "/path/to/outputs/sync_uuid_timestamp.wav"
+  "download": {
+    "download_url": "/api/v2/download/550e8400-...",
+    "link_id": "550e8400-...",
+    "expires_at": "2026-01-11T10:00:00Z",
+    "file_size": 153600,
+    "file_format": "wav",
+    "duration": 2.5
+  },
+  "created_at": "2026-01-04T10:00:00Z",
+  "completed_at": "2026-01-04T10:00:02Z"
 }
+```
+
+然後使用 download_url 下載檔案：
+```bash
+curl http://localhost:8000/api/v2/download/550e8400-... --output output.wav
+```
+
+**範例 2: 直接下載音訊檔案**
+
+```bash
+curl -X POST http://localhost:8000/api/v2/tts/sync \
+  -F "text=你好，我是 IndexTTS2 語音合成系統。" \
+  -F "speaker_audio_type=path" \
+  -F "speaker_audio_value=examples/voice_01.wav" \
+  -F "return_file=true" \
+  --output output.wav
+```
+
+**範例 3: 上傳音訊檔案**
+
+```bash
+curl -X POST http://localhost:8000/api/v2/tts/sync \
+  -F "text=你好，我是 IndexTTS2 語音合成系統。" \
+  -F "speaker_audio_type=upload" \
+  -F "speaker_audio_file=@examples/voice_01.wav"
 ```
 
 ### 4. 非同步 TTS 合成
@@ -175,20 +211,44 @@ curl -X POST http://localhost:8000/api/v2/tts/async \
 curl http://localhost:8000/api/v2/tts/status/550e8400-e29b-41d4-a716-446655440000
 ```
 
-**回應**:
+**回應（處理中）**:
+```json
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "processing",
+  "created_at": "2026-01-03T10:00:00",
+  "completed_at": null,
+  "download": null,
+  "error": null
+}
+```
+
+**回應（完成時）**:
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "completed",
   "created_at": "2026-01-03T10:00:00",
   "completed_at": "2026-01-03T10:00:30",
+  "download": {
+    "download_url": "/api/v2/download/abc123...",
+    "link_id": "abc123...",
+    "expires_at": "2026-01-10T10:00:30",
+    "file_size": 153600,
+    "file_format": "wav",
+    "duration": 2.5
+  },
   "error": null
 }
 ```
 
-**步驟 3: 取得結果**
+**步驟 3: 使用下載連結取得結果**
 
 ```bash
+# 方法 1: 使用狀態回應中的 download_url（推薦）
+curl http://localhost:8000/api/v2/download/abc123... --output result.wav
+
+# 方法 2: 直接使用 task_id（舊方法，仍支援）
 curl http://localhost:8000/api/v2/tts/result/550e8400-e29b-41d4-a716-446655440000 \
   --output result.wav
 ```
@@ -310,7 +370,7 @@ curl -X POST http://localhost:8000/api/v2/tts/sync \
 | `num_beams` | int | 3 | Beam search 寬度 |
 | `repetition_penalty` | float | 10.0 | 重複懲罰 |
 | `max_mel_tokens` | int | null | 最大 mel token 數 |
-| `return_path` | bool | false | 回傳路徑而非音訊檔 |
+| `return_file` | bool | false | 直接返回音訊檔案而非 JSON |
 
 ## 測試
 

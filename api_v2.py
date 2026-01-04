@@ -189,6 +189,39 @@ class AsyncTaskResponse(BaseModel):
     status: TaskStatus
 
 
+class DownloadInfo(BaseModel):
+    """Download link and file metadata."""
+
+    download_url: str = Field(..., description="Download URL path (relative)")
+    link_id: str = Field(..., description="Unique link identifier")
+    expires_at: datetime = Field(..., description="Link expiration timestamp")
+    file_size: int = Field(..., description="File size in bytes")
+    file_format: str = Field(default="wav", description="Audio file format")
+    duration: Optional[float] = Field(None, description="Audio duration in seconds")
+
+
+class SyncTTSResponse(BaseModel):
+    """Synchronous TTS response with download information."""
+
+    download: DownloadInfo = Field(..., description="Download information")
+    created_at: datetime = Field(..., description="Request creation timestamp")
+    completed_at: datetime = Field(..., description="Synthesis completion timestamp")
+
+
+class EnhancedTaskStatusResponse(BaseModel):
+    """Enhanced task status response with download information."""
+
+    task_id: str
+    status: TaskStatus
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    download: Optional[DownloadInfo] = Field(
+        None,
+        description="Download information (only available when status is completed)"
+    )
+    error: Optional[str] = None
+
+
 # ===== Utility Functions =====
 def contains_cjk(text: str) -> bool:
     """Check if text contains Chinese characters."""
@@ -408,18 +441,58 @@ def infer_single(
     )
 
 
-def create_download_link(task_id: str, file_path: str) -> str:
-    """Create download link for a result file."""
+def create_download_link_with_metadata(task_id: str, file_path: str) -> dict[str, Any]:
+    """
+    Create download link with complete metadata.
+
+    Args:
+        task_id: Task identifier
+        file_path: Path to result file
+
+    Returns:
+        Dictionary with link_id, download_url, expires_at, file_size, file_format, duration
+    """
+    # Generate unique link ID
     link_id = str(uuid.uuid4())
+    download_url = f"/api/v2/download/{link_id}"
     expires_at = datetime.now() + timedelta(days=app_state["link_expiry_days"])
 
+    # Get file metadata
+    file_metadata = get_audio_metadata(file_path)
+
+    # Store in download_links with extended metadata
     app_state["download_links"][link_id] = {
         "file_path": file_path,
         "task_id": task_id,
         "expires_at": expires_at,
+        "file_size": file_metadata["file_size"],
+        "file_format": file_metadata["file_format"],
+        "duration": file_metadata["duration"],
     }
 
-    return f"/api/v2/download/{link_id}"
+    return {
+        "link_id": link_id,
+        "download_url": download_url,
+        "expires_at": expires_at,
+        "file_size": file_metadata["file_size"],
+        "file_format": file_metadata["file_format"],
+        "duration": file_metadata["duration"],
+    }
+
+
+def create_download_link(task_id: str, file_path: str) -> str:
+    """
+    Create download link (legacy wrapper for backward compatibility).
+
+    Args:
+        task_id: Task identifier
+        file_path: Path to result file
+
+    Returns:
+        Download URL path
+    """
+    metadata = create_download_link_with_metadata(task_id, file_path)
+    return metadata["download_url"]
 
 
 def cleanup_temp_files(*file_paths: str) -> None:
@@ -430,6 +503,46 @@ def cleanup_temp_files(*file_paths: str) -> None:
                 os.remove(path)
             except Exception as e:
                 logger.warning(f"Failed to cleanup temp file {path}: {e}")
+
+
+def get_audio_metadata(file_path: str) -> dict[str, Any]:
+    """
+    Extract audio file metadata.
+
+    Args:
+        file_path: Path to audio file
+
+    Returns:
+        Dictionary with file_size, file_format, duration
+    """
+    metadata = {
+        "file_size": 0,
+        "file_format": "wav",
+        "duration": None
+    }
+
+    try:
+        # Get file size
+        metadata["file_size"] = os.path.getsize(file_path)
+
+        # Get file format from extension
+        file_format = Path(file_path).suffix.lstrip(".").lower()
+        if file_format:
+            metadata["file_format"] = file_format
+
+        # Get audio duration (for WAV files)
+        if file_format == "wav":
+            import wave
+            with wave.open(file_path, 'rb') as wav_file:
+                frames = wav_file.getnframes()
+                rate = wav_file.getframerate()
+                if rate > 0:
+                    metadata["duration"] = frames / float(rate)
+
+    except Exception as e:
+        logger.warning(f"Failed to extract metadata from {file_path}: {e}")
+
+    return metadata
 
 
 # ===== Background Task Processor =====
@@ -466,8 +579,8 @@ async def process_async_task(
             request,
         )
 
-        # Create download link
-        download_url = create_download_link(task_id, result_path)
+        # Create download link with metadata
+        download_metadata = create_download_link_with_metadata(task_id, result_path)
 
         # Update task status
         app_state["tasks"][task_id].update(
@@ -475,7 +588,8 @@ async def process_async_task(
                 "status": TaskStatus.COMPLETED,
                 "completed_at": datetime.now(),
                 "result_path": result_path,
-                "download_url": download_url,
+                "download_url": download_metadata["download_url"],
+                "link_id": download_metadata["link_id"],
             }
         )
 
@@ -496,6 +610,26 @@ async def process_async_task(
         cleanup_temp_files(*cleanup_paths)
 
 
+async def cleanup_expired_links():
+    """Background task to cleanup expired download links."""
+    while not app_state["shutdown_event"].is_set():
+        try:
+            now = datetime.now()
+            expired_links = [
+                link_id for link_id, info in app_state["download_links"].items()
+                if info["expires_at"] < now
+            ]
+            for link_id in expired_links:
+                del app_state["download_links"][link_id]
+
+            if expired_links:
+                logger.info(f"Cleaned up {len(expired_links)} expired download links")
+        except Exception as e:
+            logger.error(f"Error in cleanup task: {e}")
+
+        await asyncio.sleep(3600)  # Run every hour
+
+
 # ===== Lifecycle Management =====
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -503,12 +637,22 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("IndexTTS2 API starting up...")
 
+    # Start cleanup task
+    cleanup_task = asyncio.create_task(cleanup_expired_links())
+
     # Model will be loaded by main() before server starts
     yield
 
     # Shutdown
     logger.info("IndexTTS2 API shutting down...")
     app_state["shutdown_event"].set()
+
+    # Cancel cleanup task
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
 
 # ===== FastAPI Application =====
@@ -571,17 +715,22 @@ async def tts_sync(
     num_beams: int = Form(3),
     repetition_penalty: float = Form(10.0),
     max_mel_tokens: Optional[int] = Form(None),
-    return_path: bool = Form(False),
+    return_file: bool = Form(False, description="Return audio file directly instead of JSON"),
 ):
     """
     Synchronous TTS synthesis endpoint.
 
-    Returns audio file directly or JSON with file path based on return_path flag.
+    By default, returns JSON with download link. Use return_file=true to download directly.
+
+    Response Formats:
+    - Default: JSON with download information (SyncTTSResponse)
+    - return_file=true: Direct audio file download (FileResponse)
     """
     if app_state["tts"] is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     cleanup_paths = []
+    start_time = datetime.now()
 
     try:
         # Handle speaker audio input
@@ -664,14 +813,21 @@ async def tts_sync(
             request,
         )
 
-        # Return based on return_path flag
-        if return_path:
-            return {"audio_path": result_path}
-        else:
+        # Simple binary response logic
+        if return_file:
+            # Direct file download
             return FileResponse(
                 result_path,
                 media_type="audio/wav",
                 filename=os.path.basename(result_path),
+            )
+        else:
+            # Default: JSON with download link
+            download_metadata = create_download_link_with_metadata("sync", result_path)
+            return SyncTTSResponse(
+                download=DownloadInfo(**download_metadata),
+                created_at=start_time,
+                completed_at=datetime.now()
             )
 
     except HTTPException:
@@ -821,20 +977,36 @@ async def tts_async(
         raise HTTPException(status_code=500, detail=f"Failed to submit task: {str(e)}")
 
 
-@app.get("/api/v2/tts/status/{task_id}", response_model=TaskStatusResponse)
+@app.get("/api/v2/tts/status/{task_id}", response_model=EnhancedTaskStatusResponse)
 async def task_status(task_id: str):
-    """Query task status."""
+    """Query task status with download information."""
     if task_id not in app_state["tasks"]:
         raise HTTPException(status_code=404, detail="Task not found")
 
     task = app_state["tasks"][task_id]
-    return {
+    response = {
         "task_id": task["task_id"],
         "status": task["status"],
         "created_at": task["created_at"],
         "completed_at": task["completed_at"],
         "error": task["error"],
     }
+
+    # Add download info if task is completed
+    if task["status"] == TaskStatus.COMPLETED and task.get("link_id"):
+        link_id = task["link_id"]
+        if link_id in app_state["download_links"]:
+            link_data = app_state["download_links"][link_id]
+            response["download"] = DownloadInfo(
+                download_url=task["download_url"],
+                link_id=link_id,
+                expires_at=link_data["expires_at"],
+                file_size=link_data["file_size"],
+                file_format=link_data.get("file_format", "wav"),
+                duration=link_data.get("duration")
+            )
+
+    return response
 
 
 @app.get("/api/v2/tts/result/{task_id}")
