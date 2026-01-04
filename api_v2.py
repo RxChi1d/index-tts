@@ -456,7 +456,8 @@ async def process_async_task(
         converter = app_state["converter"]
         normalized_text = normalize_text(text, converter)
 
-        result_path = infer_single(
+        result_path = await asyncio.to_thread(
+            infer_single,
             tts,
             normalized_text,
             speaker_audio_path,
