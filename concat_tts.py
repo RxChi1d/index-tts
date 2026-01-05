@@ -2,7 +2,8 @@
 import os
 import subprocess
 import sys
-from typing import Iterable, List, Optional
+import tempfile
+from typing import Iterable, List, Optional, Tuple
 
 from opencc import OpenCC
 
@@ -37,6 +38,8 @@ REPETITION_PENALTY = 10.0
 MAX_MEL_TOKENS = None
 
 MAX_FILES = 20
+TEXT_OUTPUT_PATH = None  # When set, must end with .txt
+KEEP_TEMP_TEXT = True
 
 
 def list_text_files(folder_path: str) -> List[str]:
@@ -84,7 +87,7 @@ def convert_to_simplified(text: str, converter: Optional[OpenCC] = None) -> str:
     return converter.convert(text)
 
 
-def build_cli_command(text: str) -> List[str]:
+def build_cli_command(text_file_path: str) -> List[str]:
     """組出 CLI 指令參數。"""
     repo_root = os.path.dirname(os.path.abspath(__file__))
     cli_script = os.path.join(repo_root, "indextts", "cli_v2.py")
@@ -92,8 +95,8 @@ def build_cli_command(text: str) -> List[str]:
     cmd = [
         sys.executable,
         cli_script,
-        "--text",
-        text,
+        "--text-file",
+        text_file_path,
         "--spk-audio",
         SPK_AUDIO_PATH,
         "--model-dir",
@@ -171,6 +174,25 @@ def validate_settings(selected_files: List[str]) -> None:
     if EMO_MODE == 2:
         if not EMO_VECTOR or len(EMO_VECTOR) != 8:
             raise ValueError("EMO_MODE=2 需要設定 8 維 EMO_VECTOR。")
+    if TEXT_OUTPUT_PATH is not None and not TEXT_OUTPUT_PATH.endswith(".txt"):
+        raise ValueError("TEXT_OUTPUT_PATH 必須是 .txt 檔案。")
+
+
+def write_text_file(text: str) -> Tuple[str, bool]:
+    """寫入文字到檔案，回傳路徑與是否為暫存檔。"""
+    if TEXT_OUTPUT_PATH:
+        output_path = TEXT_OUTPUT_PATH
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return output_path, False
+
+    temp_file = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".txt", delete=False
+    )
+    temp_file.write(text)
+    temp_file.close()
+    return temp_file.name, True
 
 
 def main() -> None:
@@ -186,8 +208,11 @@ def main() -> None:
     normalized_text = convert_to_simplified(raw_text, converter)
 
     print(f"已選取 {len(selected_files)} 個檔案，來源資料夾：{TEXT_DIR}")
-    cmd = build_cli_command(normalized_text)
+    text_file_path, is_temp = write_text_file(normalized_text)
+    cmd = build_cli_command(text_file_path)
     subprocess.run(cmd, check=True)
+    if is_temp and not KEEP_TEMP_TEXT:
+        os.remove(text_file_path)
 
 
 if __name__ == "__main__":
