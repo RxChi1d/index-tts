@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -38,13 +39,27 @@ REPETITION_PENALTY = 10.0
 MAX_MEL_TOKENS = None
 
 MAX_FILES = 20
+RANGE_START = None  # 1-based inclusive
+RANGE_END = None  # 1-based inclusive
+# Note: Set either MAX_FILES (with RANGE_END unset) or RANGE_END (with MAX_FILES ignored).
 TEXT_OUTPUT_PATH = None  # When set, must end with .txt
 KEEP_TEMP_TEXT = True
 
 
+LEADING_INT_RE = re.compile(r"^(\d+)")
+
+
+def _numeric_sort_key(name: str) -> Tuple[int, int, str]:
+    """依檔名前綴數字排序，沒有數字則排後面。"""
+    match = LEADING_INT_RE.match(name)
+    if match:
+        return (0, int(match.group(1)), name)
+    return (1, 0, name)
+
+
 def list_text_files(folder_path: str) -> List[str]:
-    """列出資料夾內的 .txt 檔案，依檔名排序。"""
-    entries = sorted(os.listdir(folder_path))
+    """列出資料夾內的 .txt 檔案，依檔名前綴數字排序。"""
+    entries = sorted(os.listdir(folder_path), key=_numeric_sort_key)
     text_files = []
     for name in entries:
         if not name.lower().endswith(".txt"):
@@ -55,9 +70,31 @@ def list_text_files(folder_path: str) -> List[str]:
     return text_files
 
 
-def select_text_files(text_files: Iterable[str], limit: int) -> List[str]:
-    """依序取前 limit 個檔案。"""
-    return list(text_files)[:limit]
+def select_text_files(
+    text_files: Iterable[str],
+    limit: int,
+    range_start: Optional[int] = None,
+    range_end: Optional[int] = None,
+) -> List[str]:
+    """依序取指定範圍或前 limit 個檔案。"""
+    files = list(text_files)
+    if range_start is None and range_end is None:
+        return files[:limit]
+
+    start = range_start if range_start is not None else 1
+    if range_end is not None:
+        end = range_end
+    else:
+        end = start + limit - 1
+
+    if start < 1 or end < 1:
+        raise ValueError("範圍起訖必須是正整數。")
+    if start > end:
+        raise ValueError("範圍起始值不得大於結束值。")
+    if start > len(files) or end > len(files):
+        raise ValueError("指定範圍超出檔案數量。")
+
+    return files[start - 1 : end]
 
 
 def read_text_file(path: str) -> str:
@@ -178,14 +215,14 @@ def validate_settings(selected_files: List[str]) -> None:
         raise ValueError("TEXT_OUTPUT_PATH 必須是 .txt 檔案。")
 
 
-def write_text_file(text: str) -> Tuple[str, bool]:
+def write_text_file(text: str, output_path: Optional[str] = None) -> Tuple[str, bool]:
     """寫入文字到檔案，回傳路徑與是否為暫存檔。"""
-    if TEXT_OUTPUT_PATH:
-        output_path = TEXT_OUTPUT_PATH
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as handle:
+    final_output_path = output_path or TEXT_OUTPUT_PATH
+    if final_output_path:
+        os.makedirs(os.path.dirname(final_output_path) or ".", exist_ok=True)
+        with open(final_output_path, "w", encoding="utf-8") as handle:
             handle.write(text)
-        return output_path, False
+        return final_output_path, False
 
     temp_file = tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", suffix=".txt", delete=False
@@ -197,8 +234,30 @@ def write_text_file(text: str) -> Tuple[str, bool]:
 
 def main() -> None:
     text_files = list_text_files(TEXT_DIR)
-    selected_files = select_text_files(text_files, MAX_FILES)
+    selected_files = select_text_files(
+        text_files,
+        MAX_FILES,
+        range_start=RANGE_START,
+        range_end=RANGE_END,
+    )
     validate_settings(selected_files)
+
+    print("選取檔案清單：")
+    for path in selected_files:
+        print(f"- {os.path.basename(path)}")
+
+    text_output_path = None
+    if TEXT_OUTPUT_PATH is None and (RANGE_START is not None or RANGE_END is not None):
+        range_start = RANGE_START if RANGE_START is not None else 1
+        range_end = (
+            RANGE_END
+            if RANGE_END is not None
+            else range_start + MAX_FILES - 1
+        )
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(repo_root, "outputs")
+        base_name = f"{range_start:03d}-{range_end:03d}.txt"
+        text_output_path = os.path.join(output_dir, base_name)
 
     raw_text = concat_texts(selected_files)
     if not raw_text:
@@ -208,7 +267,7 @@ def main() -> None:
     normalized_text = convert_to_simplified(raw_text, converter)
 
     print(f"已選取 {len(selected_files)} 個檔案，來源資料夾：{TEXT_DIR}")
-    text_file_path, is_temp = write_text_file(normalized_text)
+    text_file_path, is_temp = write_text_file(normalized_text, text_output_path)
     cmd = build_cli_command(text_file_path)
     subprocess.run(cmd, check=True)
     if is_temp and not KEEP_TEMP_TEXT:
